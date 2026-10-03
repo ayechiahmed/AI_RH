@@ -1,0 +1,1844 @@
+{
+  "name": "RH",
+  "nodes": [
+    {
+      "parameters": {
+        "text": "=Subject: {{ $json.subject }}\nFrom: {{ $json.from }}\nBody:\n{{ $json.text }}",
+        "schemaType": "fromJson",
+        "jsonSchemaExample": "{\n\"category\": \"job_application\",\n\"candidate_name\": \"Jane Doe\",\n\"candidate_email\": \"jane@example.com\",\n\"phone\": \"+1 555 0100\",\n\"job_position\": \"Backend Engineer\"\n}",
+        "options": {
+          "systemPromptTemplate": "You are an HR mail classifier. category must be exactly one of: job_application, cv_submission, general_hr, unrelated, duplicate. Extract only what is present. Use null when a field is missing. Never invent data. Do not infer or use any protected characteristics (age, gender, ethnicity, religion, health, disability, marital status, political opinion)."
+        }
+      },
+      "id": "87e7a849-845c-4717-9f2b-fc9ee0b347d7",
+      "name": "Classify Email",
+      "type": "@n8n/n8n-nodes-langchain.informationExtractor",
+      "typeVersion": 1.2,
+      "position": [
+        -4640,
+        -400
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 1
+                },
+                "combinator": "or",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.category }}",
+                    "rightValue": "unrelated",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  },
+                  {
+                    "leftValue": "={{ $json.category }}",
+                    "rightValue": "general_hr",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "stop"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "recruitment"
+        }
+      },
+      "id": "47523246-246e-4c14-ba7d-d7d675693d19",
+      "name": "Recruitment or Not",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -4288,
+        -400
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "62ee0d38-9006-4d22-be88-fc816bfde6c8",
+      "name": "Ignore Non-Recruitment",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -4064,
+        -496
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Recruitment ATS"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Candidates"
+        },
+        "options": {}
+      },
+      "id": "49e20959-ee13-4402-b85a-e02531968de4",
+      "name": "Read Candidates",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -4064,
+        -304
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const existing = $input.all().map(i => i.json).filter(r => r && Object.keys(r).length > 0);\nconst cls = $('Classify Email').first().json || {};\nconst mail = $('Gmail Trigger').first().json || {};\nconst binary = $('Gmail Trigger').first().binary || {};\n\nconst year = new Date().getFullYear();\nconst seq = existing.length + 1;\nconst applicationId = 'APP-' + year + '-' + String(seq).padStart(6, '0');\n\nconst email = (cls.candidate_email || mail.from || '').toString().toLowerCase().trim();\nconst dupRow = existing.find(r => (r.Email || '').toString().toLowerCase().trim() === email);\nconst isDuplicate = !!dupRow;\nconst finalId = isDuplicate ? (dupRow['Candidate ID'] || applicationId) : applicationId;\n\n// Attachment detection\nconst keys = Object.keys(binary);\nlet cvKey = null, cvType = 'none', outBinary = {};\nfor (const k of keys) {\n  const b = binary[k] || {};\n  const name = (b.fileName || '').toLowerCase();\n  const ext = (b.fileExtension || name.split('.').pop() || '').toLowerCase();\n  if (['pdf','txt','doc','docx','png','jpg','jpeg'].includes(ext)) {\n    cvKey = k;\n    if (ext === 'pdf') cvType = 'pdf';\n    else if (ext === 'txt') cvType = 'txt';\n    else cvType = 'other';\n    outBinary = { data: b };\n    break;\n  }\n}\nconst hasCv = cvKey !== null;\n\nconst appliedPosition = cls.job_position || (dupRow && dupRow.Position) || '';\nconst differentPosition = isDuplicate && dupRow && (dupRow.Position || '') !== appliedPosition && appliedPosition !== '';\n\nreturn [{\n  json: {\n    application_id: finalId,\n    candidate_name: cls.candidate_name || '',\n    candidate_email: email,\n    phone: cls.phone || '',\n    applied_position: appliedPosition,\n    application_date: new Date().toISOString(),\n    source: 'Gmail',\n    is_duplicate: isDuplicate,\n    different_position: differentPosition,\n    previous_position: dupRow ? (dupRow.Position || '') : '',\n    has_cv: hasCv,\n    cv_type: cvType,\n    email_subject: mail.subject || '',\n    email_body: mail.text || '',\n  },\n  binary: outBinary,\n}];"
+      },
+      "id": "522ca916-60b3-4ac8-8b3d-f73d05b8c441",
+      "name": "Prepare Application",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3840,
+        -304
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.candidate_email }}",
+        "subject": "=We received your application ({{ $json.application_id }})",
+        "message": "=<p>Dear {{ $json.candidate_name }},</p>\n<p>Thank you for applying for {{ $json.applied_position }}. We have received your application (reference {{ $json.application_id }}) and our recruitment team will review it.</p>\n<p>Kind regards,<br/>Recruitment Team</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "30940abc-7a10-4ca7-9396-9422e70bd35c",
+      "name": "Send Acknowledgement",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -3616,
+        -400
+      ],
+      "webhookId": "9169372a-2a2a-41ab-a8ca-b69ccfef1638"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "leftValue": "={{ $json.different_position }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "255bbe1e-873f-4993-99d8-5f279b13a583",
+      "name": "Is Duplicate + New Position?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -3616,
+        -208
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "<__PLACEHOLDER_VALUE__HR notifications email__>",
+        "subject": "=[Recruitment] Duplicate candidate applied to a new position — {{ $json.application_id }}",
+        "message": "=<p>Candidate {{ $json.candidate_name }} ({{ $json.candidate_email }}) already exists (previous position: {{ $json.previous_position }}) and has now applied for {{ $json.applied_position }}. The existing record was updated instead of creating a duplicate.</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "6ac7a83b-b497-4045-b1e4-d05e72ca98e3",
+      "name": "Notify HR — Duplicate",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -3392,
+        -208
+      ],
+      "webhookId": "aabcd371-a807-4388-be0e-a7874a9e8175"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "leftValue": "={{ $json.has_cv }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c8ebb017-2eda-4785-bef2-41a981e76166",
+      "name": "Has CV Attachment?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -3616,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 1
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.cv_type }}",
+                    "rightValue": "pdf",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "pdf"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 1
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.cv_type }}",
+                    "rightValue": "txt",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "txt"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "other"
+        }
+      },
+      "id": "165fa75a-1a26-49a6-9591-cb01861a9bf4",
+      "name": "CV Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -3392,
+        -16
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "892c90ee-fec3-43f9-9e22-020917e01a78",
+      "name": "No CV Handling",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -3392,
+        592
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.candidate_email }}",
+        "subject": "=Please send your CV — {{ $json.applied_position }} ({{ $json.application_id }})",
+        "message": "=<p>Dear {{ $json.candidate_name }},</p>\n<p>Thank you for your application for {{ $json.applied_position }}. We could not find a CV/resume attached. Please reply to this email with your CV attached (PDF preferred) quoting reference {{ $json.application_id }} so we can continue reviewing your application.</p>\n<p>Kind regards,<br/>Recruitment Team</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "bb5aad5a-2711-45cf-894f-e88ca182bf4d",
+      "name": "Request CV Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -3168,
+        304
+      ],
+      "webhookId": "2e40ddd3-2418-41b0-a343-a82e0e6b8d3b"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Recruitment ATS"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Candidates"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": [
+            "Email"
+          ],
+          "value": {
+            "Candidate ID": "={{ $json.application_id }}",
+            "Application date": "={{ $json.application_date }}",
+            "Candidate name": "={{ $json.candidate_name }}",
+            "Email": "={{ $json.candidate_email }}",
+            "Phone": "={{ $json.phone }}",
+            "Position": "={{ $json.applied_position }}",
+            "Status": "CV Missing",
+            "Source": "={{ $json.source }}",
+            "Created timestamp": "={{ $json.application_date }}",
+            "Updated timestamp": "={{ $now.toISO() }}"
+          },
+          "schema": [
+            {
+              "id": "Candidate ID",
+              "displayName": "Candidate ID",
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "required": false,
+              "display": true
+            },
+            {
+              "id": "Application date",
+              "displayName": "Application date",
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "required": false,
+              "display": true
+            },
+            {
+              "id": "Candidate name",
+              "displayName": "Candidate name",
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "required": false,
+              "display": true
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true
+            },
+            {
+              "id": "Phone",
+              "displayName": "Phone",
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "required": false,
+              "display": true
+            },
+            {
+              "id": "Position",
+              "displayName": "Position",
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "required": false,
+              "display": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "required": false,
+              "display": true
+            },
+            {
+              "id": "Source",
+              "displayName": "Source",
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "required": false,
+              "display": true
+            },
+            {
+              "id": "Created timestamp",
+              "displayName": "Created timestamp",
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "required": false,
+              "display": true
+            },
+            {
+              "id": "Updated timestamp",
+              "displayName": "Updated timestamp",
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "required": false,
+              "display": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "6fe3ef16-3176-42e6-9ef3-9f1a11ff839e",
+      "name": "Record CV Missing",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -3168,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "<__PLACEHOLDER_VALUE__HR notifications email__>",
+        "subject": "=[Recruitment] Application without CV — {{ $json.application_id }}",
+        "message": "=<p>{{ $json.candidate_name }} ({{ $json.candidate_email }}) applied for {{ $json.applied_position }} without a CV. A CV request has been sent and the record is marked \"CV Missing\".</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "54f1a22f-b230-4d00-9bb3-3b005f68ef73",
+      "name": "Notify HR — Missing CV",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -3168,
+        688
+      ],
+      "webhookId": "3d88a216-6f4a-417c-965f-95e57e7660d2"
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {
+          "joinPages": true
+        }
+      },
+      "id": "31176b8e-af9e-4b30-a9c3-11def70ba5c6",
+      "name": "Extract PDF",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -3168,
+        -288
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json || {};\nconst cvText = item.text || item.data || '';\nreturn [{\n  json: { cv_text: cvText },\n  binary: $('Prepare Application').first().binary || {},\n}];"
+      },
+      "id": "7f6497cf-4292-4078-a474-d11ee538569f",
+      "name": "Get CV Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2944,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "text",
+        "options": {}
+      },
+      "id": "3782e7e0-46ff-44e1-9f23-48d3a833d988",
+      "name": "Extract Text",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -3168,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// DOCX/DOC/image CVs cannot be extracted natively; pass empty text and flag for HR.\nreturn [{ json: { text: '', unsupported_format: true } }];"
+      },
+      "id": "7b7327ca-91a6-45af-9a5f-49cadff14ff3",
+      "name": "Unsupported CV Format",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3168,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "name": "={{ $('Prepare Application').first().json.application_id }} - {{ $('Prepare Application').first().json.candidate_name }} CV",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "root",
+          "cachedResultName": "Recruitment (select/create folder)"
+        },
+        "options": {}
+      },
+      "id": "22ce75f4-75ec-479e-a64e-6cdfca3bf176",
+      "name": "Upload CV to Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -2720,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "text": "={{ $('Get CV Text').first().json.cv_text }}",
+        "schemaType": "fromJson",
+        "jsonSchemaExample": "{\n\"candidate_name\": \"Jane Doe\",\n\"email\": \"jane@example.com\",\n\"phone\": \"+15550100\",\n\"location\": \"London, UK\",\n\"linkedin\": \"https://linkedin.com/in/janedoe\",\n\"portfolio\": null,\n\"education\": [\"BSc Computer Science\"],\n\"certifications\": [\"AWS SA\"],\n\"years_of_experience\": 6,\n\"current_position\": \"Senior Backend Engineer\",\n\"previous_positions\": [\"Backend Engineer\"],\n\"technical_skills\": [\"Node.js\", \"Python\", \"AWS\"],\n\"soft_skills\": [\"communication\"],\n\"languages\": [\"English\"],\n\"projects\": [\"Payments platform\"],\n\"industries\": [\"Fintech\"],\n\"achievements\": [\"Reduced latency 40%\"],\n\"cv_summary\": \"Experienced backend engineer.\",\n\"applied_position\": \"Backend Engineer\"\n}",
+        "options": {
+          "systemPromptTemplate": "Extract structured candidate data from the CV text. NEVER invent information that is not present — use null or an empty array when missing. Evaluate/record only job-related qualifications. Do not infer or record protected characteristics (age, gender, ethnicity, religion, health, disability, marital status, political opinion)."
+        }
+      },
+      "id": "0debd815-607a-47e3-8060-12dfcde36e4f",
+      "name": "Extract CV Data",
+      "type": "@n8n/n8n-nodes-langchain.informationExtractor",
+      "typeVersion": 1.2,
+      "position": [
+        -2496,
+        16
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "264c40ba-0f77-4990-9081-31a32fcd54eb",
+      "name": "Gemini (CV Parse)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        -4864,
+        1120
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Recruitment ATS"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Job Requirements"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "Job title",
+              "lookupValue": "={{ $('Prepare Application').first().json.applied_position }}"
+            }
+          ]
+        },
+        "options": {
+          "returnFirstMatch": true
+        }
+      },
+      "id": "a7538a09-a4ef-4f29-b36a-9a9621c71900",
+      "name": "Read Job Requirements",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -2144,
+        16
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(i => i.json).filter(r => r && Object.keys(r).length > 0);\nconst req = rows[0] || {};\nconst found = !!(req['Job ID'] || req['Job title']);\nreturn [{ json: {\n  position_found: found,\n  job_id: req['Job ID'] || '',\n  job_title: req['Job title'] || '',\n  required_skills: req['Required skills'] || '',\n  preferred_skills: req['Preferred skills'] || '',\n  min_experience: req['Minimum experience'] || 0,\n  required_education: req['Required education'] || '',\n  required_languages: req['Required languages'] || '',\n  min_score: Number(req['Minimum score'] || 0),\n  interview_duration: Number(req['Interview duration'] || 45),\n  recruiter_email: req['Recruiter email'] || '',\n} }];"
+      },
+      "id": "c73e6d00-b367-4300-92bc-bc3263c3aa0e",
+      "name": "Match Job Requirement",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1920,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "leftValue": "={{ $json.position_found }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "329bcb1b-776a-43c5-801d-8daa50b0364e",
+      "name": "Position Identified?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -1696,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Recruitment ATS"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Config"
+        },
+        "options": {
+          "returnFirstMatch": true
+        }
+      },
+      "id": "e40db192-2dc3-4852-b29e-db22d8ee5454",
+      "name": "Read Config",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -1472,
+        -288
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "text": "=Evaluate this candidate against the specific job requirements.\nCANDIDATE (structured): {{ JSON.stringify($('Extract CV Data').first().json) }}\nJOB REQUIREMENTS: required_skills={{ $('Match Job Requirement').first().json.required_skills }}; preferred_skills={{ $('Match Job Requirement').first().json.preferred_skills }}; min_experience={{ $('Match Job Requirement').first().json.min_experience }}; required_education={{ $('Match Job Requirement').first().json.required_education }}; required_languages={{ $('Match Job Requirement').first().json.required_languages }}.",
+        "schemaType": "fromJson",
+        "jsonSchemaExample": "{\n\"overall_score\": 82,\n\"recommendation\": \"Strong Candidate\",\n\"strengths\": [\"strong backend skills\"],\n\"weaknesses\": [\"no k8s\"],\n\"matched_requirements\": [\"Node.js\"],\n\"missing_requirements\": [\"Kubernetes\"],\n\"experience_score\": 85,\n\"skills_score\": 80,\n\"education_score\": 90,\n\"project_score\": 75,\n\"language_score\": 100,\n\"explanation\": \"Solid match on core backend requirements.\"\n}",
+        "options": {
+          "systemPromptTemplate": "You are a fair hiring assistant. Score 0-100 based ONLY on job-related qualifications: skills, relevant experience, education, certifications, projects, technical skills, industry experience, languages, seniority, overall relevance. Do NOT use keyword counting alone. recommendation must be exactly one of: Strong Candidate, Potential Candidate, Not Recommended, Manual Review. NEVER infer or use protected characteristics (age, gender, ethnicity, religion, health, disability, marital status, political opinion). Keep the explanation job-related and explainable."
+        }
+      },
+      "id": "8d6073e0-ed16-4bc8-8ef0-bf41096f4194",
+      "name": "Evaluate Candidate",
+      "type": "@n8n/n8n-nodes-langchain.informationExtractor",
+      "typeVersion": 1.2,
+      "position": [
+        -1248,
+        -288
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "519a7b37-ac60-4e8f-a479-d0dddc790ffc",
+      "name": "Gemini (Evaluate)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        -4864,
+        912
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const app = $('Prepare Application').first().json;\nconst cv = $('Extract CV Data').first().json || {};\nconst ev = $('Evaluate Candidate').first().json || {};\nconst req = $('Match Job Requirement').first().json || {};\nconst cfg = $('Read Config').first().json || {};\nconst drive = $('Upload CV to Drive').first().json || {};\n\nfunction arr(v){ return Array.isArray(v) ? v.join(', ') : (v || ''); }\n\nconst strongT = Number(cfg.strong_threshold || 80);\nconst midT = Number(cfg.potential_threshold || 65);\nconst autoReject = String(cfg.auto_reject_enabled || 'FALSE').toUpperCase() === 'TRUE';\nconst score = Number(ev.overall_score || 0);\n\nlet band, status;\nif (score >= strongT) { band = 'strong'; status = 'Interview Requested'; }\nelse if (score >= midT) { band = 'mid'; status = 'HR Review'; }\nelse { band = 'low'; status = autoReject ? 'Rejected' : 'HR Review'; }\n\nconst summary = 'Candidate ' + (app.candidate_name || 'N/A') + ' is applying for ' + (app.applied_position || 'N/A') +\n  '. They have ' + (cv.years_of_experience != null ? cv.years_of_experience : 'N/A') + ' years of relevant experience and skills in ' +\n  arr(cv.technical_skills) + '. Strongest matching requirements: ' + arr(ev.matched_requirements) +\n  '. Main gaps: ' + arr(ev.missing_requirements) + '. AI screening score: ' + score + '/100. Recommendation: ' + (ev.recommendation || 'Manual Review') + '.';\n\nreturn [{ json: {\n  'Candidate ID': app.application_id,\n  'Application date': app.application_date,\n  'Candidate name': app.candidate_name,\n  Email: app.candidate_email,\n  Phone: app.phone || cv.phone || '',\n  Position: app.applied_position,\n  'CV link': drive.webViewLink || '',\n  'CV summary': cv.cv_summary || '',\n  Skills: arr(cv.technical_skills),\n  Experience: (cv.years_of_experience != null ? String(cv.years_of_experience) : ''),\n  Education: arr(cv.education),\n  'AI score': score,\n  Recommendation: ev.recommendation || 'Manual Review',\n  'Missing requirements': arr(ev.missing_requirements),\n  Status: status,\n  'Interview date': '',\n  Recruiter: req.recruiter_email || '',\n  'Recruiter notes': '',\n  'Last communication': 'Acknowledgement sent',\n  Source: 'Gmail',\n  'Created timestamp': app.application_date,\n  'Updated timestamp': new Date().toISOString(),\n  decision_band: band,\n  auto_reject: autoReject,\n  recruiter_email: req.recruiter_email || '',\n  interview_duration: req.interview_duration || 45,\n  recruiter_summary: summary,\n  strengths: arr(ev.strengths),\n  weaknesses: arr(ev.weaknesses),\n  explanation: ev.explanation || '',\n} }];"
+      },
+      "id": "e1a09bee-6f58-4b88-b4a4-c88fc2624304",
+      "name": "Build Candidate Record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -896,
+        -288
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Recruitment ATS"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Candidates"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [
+            "Email"
+          ],
+          "value": {},
+          "schema": [
+            {
+              "id": "Candidate ID",
+              "displayName": "Candidate ID",
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "required": false,
+              "display": true
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true
+            }
+          ]
+        },
+        "options": {
+          "handlingExtraData": "ignoreIt"
+        }
+      },
+      "id": "fcd741fe-925a-4593-8b19-e7552e246793",
+      "name": "Upsert Candidate",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -672,
+        -288
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "databaseId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Select Candidates database"
+        },
+        "title": "={{ $json['Candidate name'] }} — {{ $json.Position }}",
+        "blockUi": {
+          "blockValues": [
+            {
+              "type": "heading_2",
+              "textContent": "=AI Screening: {{ $json['AI score'] }}/100 — {{ $json.Recommendation }}"
+            },
+            {
+              "textContent": "={{ $json.recruiter_summary }}"
+            },
+            {
+              "textContent": "=CV: {{ $json['CV link'] }} | Status: {{ $json.Status }} | Recruiter: {{ $json.Recruiter }} | Applied: {{ $json['Application date'] }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "8c1a811b-33d7-4fba-88d3-431b62ace22f",
+      "name": "Notion — Candidate Page",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [
+        -448,
+        -288
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 1
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('Build Candidate Record').item.json.decision_band }}",
+                    "rightValue": "strong",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "strong"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 1
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('Build Candidate Record').item.json.decision_band }}",
+                    "rightValue": "mid",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "mid"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 1
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('Build Candidate Record').item.json.decision_band }}",
+                    "rightValue": "low",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "low"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "8d93a44a-e16b-4000-8f82-d28edd6cf015",
+      "name": "Decision Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -224,
+        -304
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "0df687f1-6684-4003-a3e1-f5d8c2818cc4",
+      "name": "Manual Review Needed",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -1472,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Recruitment ATS"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Candidates"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": [
+            "Email"
+          ],
+          "value": {
+            "Candidate ID": "={{ $('Prepare Application').first().json.application_id }}",
+            "Application date": "={{ $('Prepare Application').first().json.application_date }}",
+            "Candidate name": "={{ $('Prepare Application').first().json.candidate_name }}",
+            "Email": "={{ $('Prepare Application').first().json.candidate_email }}",
+            "Phone": "={{ $('Prepare Application').first().json.phone }}",
+            "Position": "={{ $('Prepare Application').first().json.applied_position }}",
+            "CV link": "={{ $('Upload CV to Drive').first().json.webViewLink }}",
+            "Status": "HR Review",
+            "Source": "Gmail",
+            "Created timestamp": "={{ $('Prepare Application').first().json.application_date }}",
+            "Updated timestamp": "={{ $now.toISO() }}"
+          },
+          "schema": [
+            {
+              "id": "Candidate ID",
+              "displayName": "Candidate ID",
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "required": false,
+              "display": true
+            },
+            {
+              "id": "Application date",
+              "displayName": "Application date",
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "required": false,
+              "display": true
+            },
+            {
+              "id": "Candidate name",
+              "displayName": "Candidate name",
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "required": false,
+              "display": true
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true
+            },
+            {
+              "id": "Phone",
+              "displayName": "Phone",
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "required": false,
+              "display": true
+            },
+            {
+              "id": "Position",
+              "displayName": "Position",
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "required": false,
+              "display": true
+            },
+            {
+              "id": "CV link",
+              "displayName": "CV link",
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "required": false,
+              "display": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "required": false,
+              "display": true
+            },
+            {
+              "id": "Source",
+              "displayName": "Source",
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "required": false,
+              "display": true
+            },
+            {
+              "id": "Created timestamp",
+              "displayName": "Created timestamp",
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "required": false,
+              "display": true
+            },
+            {
+              "id": "Updated timestamp",
+              "displayName": "Updated timestamp",
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "required": false,
+              "display": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "769298e2-3b8e-4d01-8353-d2889d17dbff",
+      "name": "Record Manual Review",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -1184,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "<__PLACEHOLDER_VALUE__HR notifications email__>",
+        "subject": "=[Recruitment] Manual review — position not identified ({{ $('Prepare Application').first().json.application_id }})",
+        "message": "=<p>The applied position could not be matched to an active job opening for {{ $('Prepare Application').first().json.candidate_name }} ({{ $('Prepare Application').first().json.candidate_email }}). Applied position text: \"{{ $('Prepare Application').first().json.applied_position }}\". Please review manually. CV: {{ $('Upload CV to Drive').first().json.webViewLink }}</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "3d5ec3f5-4ddc-4367-b19a-0f075480963a",
+      "name": "Notify HR — Manual Review",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -1184,
+        96
+      ],
+      "webhookId": "884a5be6-06d3-45b8-b0be-907d790f7fb4"
+    },
+    {
+      "parameters": {},
+      "id": "384ecf62-663d-478d-bd19-1d61f7932d74",
+      "name": "Strong Candidate",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -480
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "<__PLACEHOLDER_VALUE__HR notifications email__>",
+        "subject": "=[Recruitment] HR review needed — {{ $('Build Candidate Record').item.json['Candidate name'] }} ({{ $('Build Candidate Record').item.json['Candidate ID'] }})",
+        "message": "=<p>{{ $('Build Candidate Record').item.json.recruiter_summary }}</p>\n<p>AI evaluation: {{ $('Build Candidate Record').item.json.explanation }}</p>\n<p>CV: {{ $('Build Candidate Record').item.json['CV link'] }} | Missing requirements: {{ $('Build Candidate Record').item.json['Missing requirements'] }}</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "35782ec0-a8b6-4689-8fe3-d0e755f09578",
+      "name": "Notify HR — HR Review",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        -288
+      ],
+      "webhookId": "fc8acecf-0917-408a-8292-95b04b1510da"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "leftValue": "={{ $('Build Candidate Record').item.json.auto_reject }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "6e0af319-c27e-467e-898c-9a8174248f25",
+      "name": "Auto-Reject Enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        0,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Build Candidate Record').item.json.Email }}",
+        "subject": "=Your application for {{ $('Build Candidate Record').item.json.Position }}",
+        "message": "=<p>Dear {{ $('Build Candidate Record').item.json['Candidate name'] }},</p>\n<p>Thank you for your interest in our company and for taking the time to apply for {{ $('Build Candidate Record').item.json.Position }}. After reviewing your application, we have decided not to move forward with your application at this stage. We appreciate your interest and wish you success in your job search.</p>\n<p>Kind regards,<br/>Recruitment Team</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "aa964ec9-2bbf-4ebd-b546-f10d781557f8",
+      "name": "Rejection Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        224,
+        -192
+      ],
+      "webhookId": "79bd286e-ce22-42c7-bd09-babacfe94e3d"
+    },
+    {
+      "parameters": {
+        "sendTo": "<__PLACEHOLDER_VALUE__HR notifications email__>",
+        "subject": "=[Recruitment] Low-score review — {{ $('Build Candidate Record').item.json['Candidate name'] }} ({{ $('Build Candidate Record').item.json['Candidate ID'] }})",
+        "message": "=<p>Auto-reject is disabled; this low-scoring candidate needs an HR decision.</p>\n<p>{{ $('Build Candidate Record').item.json.recruiter_summary }}</p>\n<p>CV: {{ $('Build Candidate Record').item.json['CV link'] }}</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "231d8d88-bfe2-48fa-8b67-68f7a0e11557",
+      "name": "Notify HR — Low Score Review",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        224,
+        0
+      ],
+      "webhookId": "274f5aeb-e069-4a13-8683-03d10b0f181e"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Build Candidate Record').item.json.Email }}",
+        "subject": "=Interview invitation — {{ $('Build Candidate Record').item.json.Position }} ({{ $('Build Candidate Record').item.json['Candidate ID'] }})",
+        "message": "=<p>Dear {{ $('Build Candidate Record').item.json['Candidate name'] }},</p>\n<p>Congratulations! After reviewing your application for <b>{{ $('Build Candidate Record').item.json.Position }}</b>, we would like to invite you to an interview ({{ $('Build Candidate Record').item.json.interview_duration }} minutes).</p>\n<p>Please choose a convenient slot using the link below. Once you confirm, we will send a calendar invite with a Google Meet link.</p>\n<p><a href=\"{{ $env.INTERVIEW_BOOKING_URL }}?application_id={{ $('Build Candidate Record').item.json['Candidate ID'] }}\">Choose your interview slot</a></p>\n<p>Reference: {{ $('Build Candidate Record').item.json['Candidate ID'] }}</p>\n<p>Kind regards,<br/>Recruitment Team</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "ec1b7c34-bcbf-4c74-9a53-fbf32bda10f4",
+      "name": "Interview Invitation Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        224,
+        -576
+      ],
+      "webhookId": "2e596ead-c9af-4d42-a245-59118520dee9"
+    },
+    {
+      "parameters": {
+        "sendTo": "<__PLACEHOLDER_VALUE__HR notifications email__>",
+        "subject": "=[Recruitment] Strong candidate — {{ $('Build Candidate Record').item.json['Candidate name'] }} ({{ $('Build Candidate Record').item.json['Candidate ID'] }})",
+        "message": "=<p>{{ $('Build Candidate Record').item.json.recruiter_summary }}</p>\n<p>CV: {{ $('Build Candidate Record').item.json['CV link'] }}</p>\n<p>Strengths: {{ $('Build Candidate Record').item.json.strengths }}<br/>Weaknesses: {{ $('Build Candidate Record').item.json.weaknesses }}</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "81cdad23-4f07-47a1-a275-5ee6cce4d6c8",
+      "name": "Notify HR — Strong Candidate",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        224,
+        -384
+      ],
+      "webhookId": "85802312-8571-4e67-a6a7-aa3e71ba4c2b"
+    },
+    {
+      "parameters": {},
+      "id": "891914bc-7b48-4004-943f-293335031208",
+      "name": "On Workflow Error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        -4864,
+        -896
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json || {};\nconst execution = item.execution || {};\nconst wf = item.workflow || {};\nconst err = execution.error || {};\n// Application/candidate context may be attached to the failing item's json when available.\nconst ctx = (execution.lastNodeExecuted && item[execution.lastNodeExecuted]) || {};\nconst trigger = item.trigger || {};\n\nfunction pick(...vals) {\n  for (const v of vals) {\n    if (v !== undefined && v !== null && v !== '') return v;\n  }\n  return '';\n}\n\nconst row = {\n  application_id: pick(item.application_id, ctx.application_id, ''),\n  candidate_name: pick(item.candidate_name, ctx.candidate_name, ''),\n  candidate_email: pick(item.candidate_email, item.email, ctx.email, ''),\n  workflow_name: pick(wf.name, ''),\n  workflow_id: pick(wf.id, ''),\n  execution_id: pick(execution.id, ''),\n  failed_step: pick(execution.lastNodeExecuted, ''),\n  error_message: pick(err.message, err.description, 'Unknown error'),\n  error_stack: pick(err.stack, ''),\n  timestamp: new Date().toISOString(),\n};\n\nreturn [{ json: row }];"
+      },
+      "id": "0419f3ae-1f34-4f38-8cc0-a418fd190c06",
+      "name": "Build Error Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4640,
+        -896
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Recruitment ATS"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Error Log"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "schema": [
+            {
+              "id": "application_id",
+              "displayName": "application_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "candidate_name",
+              "displayName": "candidate_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "candidate_email",
+              "displayName": "candidate_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "workflow_name",
+              "displayName": "workflow_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "workflow_id",
+              "displayName": "workflow_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "execution_id",
+              "displayName": "execution_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "failed_step",
+              "displayName": "failed_step",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "error_message",
+              "displayName": "error_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "error_stack",
+              "displayName": "error_stack",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "8b7f358a-867e-409b-af40-7c94af8e68d8",
+      "name": "Log to Error Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -4416,
+        -992
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "<__PLACEHOLDER_VALUE__HR alert email address__>",
+        "subject": "=[Recruitment Error] {{ $json.workflow_name }} failed at {{ $json.failed_step }}",
+        "message": "=<h3>Recruitment workflow failure</h3>\n<ul>\n<li><b>Workflow:</b> {{ $json.workflow_name }} ({{ $json.workflow_id }})</li>\n<li><b>Execution ID:</b> {{ $json.execution_id }}</li>\n<li><b>Failed step:</b> {{ $json.failed_step }}</li>\n<li><b>Application ID:</b> {{ $json.application_id }}</li>\n<li><b>Candidate:</b> {{ $json.candidate_name }} ({{ $json.candidate_email }})</li>\n<li><b>Error:</b> {{ $json.error_message }}</li>\n<li><b>Timestamp:</b> {{ $json.timestamp }}</li>\n</ul>\n<p>The application has been logged in the Error Log sheet and has not been lost.</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "fc6f9d9a-9213-46f7-90e8-5610a05786b6",
+      "name": "Alert HR of Failure",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -4416,
+        -800
+      ],
+      "webhookId": "dc2ce652-f28c-42e8-a64a-c4519e284905"
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {}
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -4864,
+        -400
+      ],
+      "id": "42d02ece-d2ed-4935-a78a-5917bcb8789f",
+      "name": "Gmail Trigger1"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.1-flash-image",
+        "options": {
+          "temperature": 0
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        -4576,
+        -176
+      ],
+      "id": "82bf07ed-99c8-439a-a327-1c5a47ffe81b",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "QSbi2Va676n7tNUU",
+          "name": "Google Gemini(PaLM) Api account 2"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Classify Email": {
+      "main": [
+        [
+          {
+            "node": "Recruitment or Not",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recruitment or Not": {
+      "main": [
+        [
+          {
+            "node": "Ignore Non-Recruitment",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Read Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Candidates": {
+      "main": [
+        [
+          {
+            "node": "Prepare Application",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Application": {
+      "main": [
+        [
+          {
+            "node": "Send Acknowledgement",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Is Duplicate + New Position?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Has CV Attachment?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Duplicate + New Position?": {
+      "main": [
+        [
+          {
+            "node": "Notify HR — Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has CV Attachment?": {
+      "main": [
+        [
+          {
+            "node": "CV Type",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No CV Handling",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CV Type": {
+      "main": [
+        [
+          {
+            "node": "Extract PDF",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract Text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Unsupported CV Format",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No CV Handling": {
+      "main": [
+        [
+          {
+            "node": "Request CV Email",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Record CV Missing",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Notify HR — Missing CV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract PDF": {
+      "main": [
+        [
+          {
+            "node": "Get CV Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get CV Text": {
+      "main": [
+        [
+          {
+            "node": "Upload CV to Drive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Text": {
+      "main": [
+        [
+          {
+            "node": "Get CV Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unsupported CV Format": {
+      "main": [
+        [
+          {
+            "node": "Get CV Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload CV to Drive": {
+      "main": [
+        [
+          {
+            "node": "Extract CV Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract CV Data": {
+      "main": [
+        [
+          {
+            "node": "Read Job Requirements",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Job Requirements": {
+      "main": [
+        [
+          {
+            "node": "Match Job Requirement",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match Job Requirement": {
+      "main": [
+        [
+          {
+            "node": "Position Identified?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Position Identified?": {
+      "main": [
+        [
+          {
+            "node": "Read Config",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Manual Review Needed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Config": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Candidate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Candidate": {
+      "main": [
+        [
+          {
+            "node": "Build Candidate Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Candidate Record": {
+      "main": [
+        [
+          {
+            "node": "Upsert Candidate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Candidate": {
+      "main": [
+        [
+          {
+            "node": "Notion — Candidate Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notion — Candidate Page": {
+      "main": [
+        [
+          {
+            "node": "Decision Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decision Router": {
+      "main": [
+        [
+          {
+            "node": "Strong Candidate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify HR — HR Review",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Auto-Reject Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Review Needed": {
+      "main": [
+        [
+          {
+            "node": "Record Manual Review",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Notify HR — Manual Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Strong Candidate": {
+      "main": [
+        [
+          {
+            "node": "Interview Invitation Email",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Notify HR — Strong Candidate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auto-Reject Enabled?": {
+      "main": [
+        [
+          {
+            "node": "Rejection Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify HR — Low Score Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "On Workflow Error": {
+      "main": [
+        [
+          {
+            "node": "Build Error Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Error Row": {
+      "main": [
+        [
+          {
+            "node": "Log to Error Sheet",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Alert HR of Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail Trigger1": {
+      "main": [
+        [
+          {
+            "node": "Classify Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Classify Email",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "4214dc0f-eb6d-4faf-8545-7c6bfccae8c5",
+  "meta": {
+    "instanceId": "558d88703fb65b2d0e44613bc35916258b0f0bf983c5d4730c00c424b77ca36a"
+  },
+  "id": "RxHMF5RRyoR4ST4MuZ1cZ",
+  "tags": []
+}
